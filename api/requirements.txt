@@ -1,8 +1,8 @@
 # FastAPI and server
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-pydantic==2.5.3
-python-multipart==0.0.6
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.9.0
+python-multipart>=0.0.12
 
 # Optional: HuggingFace datasets (for real data)
 # Uncomment if you want to test with actual HuggingFace data

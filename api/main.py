@@ -14,6 +14,7 @@ Access at:
 """
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
@@ -31,6 +32,15 @@ app = FastAPI(
     title="Spark Data Sources Testing API",
     description="Test OpenSky and Transcript data sources via REST endpoints",
     version="1.0.0"
+)
+
+# Configure CORS to allow requests from the demo page
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
