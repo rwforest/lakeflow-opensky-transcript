@@ -2,7 +2,7 @@
 FastAPI Application for OpenSky and Transcript Data Sources
 
 This application provides REST endpoints to access real-time aircraft tracking data
-from the OpenSky Network and call center transcripts from HuggingFace datasets.
+from the OpenSky Network and call center transcripts from local datasets.
 
 Run with:
     uvicorn main:app --reload
@@ -32,7 +32,7 @@ from requests.packages.urllib3.util.retry import Retry
 
 app = FastAPI(
     title="OpenSky & Transcript Data API",
-    description="Access real-time OpenSky Network data and HuggingFace transcript datasets via REST endpoints",
+    description="Access real-time OpenSky Network data and call center transcript datasets via REST endpoints",
     version="2.0.0"
 )
 
@@ -252,13 +252,12 @@ class OpenSkyClient:
 
 
 # ============================================================================
-# Transcript/HuggingFace Integration
+# Transcript Integration
 # ============================================================================
 
 class TranscriptClient:
-    """Client for HuggingFace transcript datasets"""
+    """Client for call center transcript datasets"""
 
-    DEFAULT_DATASET = "AIxBlock/92k-real-world-call-center-scripts-english"
     LOCAL_DATASET_PATH = "data/conversations.jsonl"
     CHUNK_SIZE = 1000  # Load utterances in chunks
 
@@ -269,25 +268,16 @@ class TranscriptClient:
         self._load_dataset()
 
     def _load_dataset(self):
-        """Load conversations from local file, HuggingFace, or use fallback data"""
+        """Load conversations from local file or use fallback data"""
         # Try to load from local file first (fastest)
         if os.path.exists(self.LOCAL_DATASET_PATH):
             print(f"Loading dataset from local file: {self.LOCAL_DATASET_PATH}")
             self._load_from_local_file()
             return
 
-        # Fallback to HuggingFace
-        try:
-            from datasets import load_dataset
-            print(f"Loading dataset from HuggingFace: {self.DEFAULT_DATASET}")
-            dataset = load_dataset(self.DEFAULT_DATASET, split='train', streaming=True)
-            self._parse_huggingface_dataset(dataset)
-        except ImportError:
-            print("HuggingFace datasets library not available, using sample data")
-            self._generate_sample_data()
-        except Exception as e:
-            print(f"Error loading dataset: {e}, using sample data")
-            self._generate_sample_data()
+        # Use sample data if no local file exists
+        print("No local dataset file found, using sample data")
+        self._generate_sample_data()
 
     def _load_from_local_file(self):
         """Load all utterances from local JSONL file"""
@@ -307,86 +297,6 @@ class TranscriptClient:
         avg_utterances = self.total_utterances / len(conv_ids)
         print(f"Average utterances per conversation: {avg_utterances:.1f}")
         print(f"For 500k calls/day: ~{int(500000 * avg_utterances / 86400)} utterances/second needed")
-
-    def _parse_huggingface_dataset(self, dataset):
-        """Parse HuggingFace dataset into conversations"""
-        import random
-
-        print("Parsing HuggingFace dataset...")
-
-        domains = ['billing', 'technical_support', 'sales', 'customer_service']
-        topics = ['inbound', 'outbound']
-        accents = ['american', 'indian', 'filipino']
-
-        for idx, record in enumerate(dataset):
-            if idx >= 100:
-                break
-
-            try:
-                conversation_id = record.get('id', f"conv_{idx}")
-                transcript_text = record.get('transcript', record.get('text', ''))
-
-                utterances = self._parse_transcript_text(
-                    transcript_text,
-                    conversation_id,
-                    record.get('domain', random.choice(domains)),
-                    record.get('topic', random.choice(topics)),
-                    record.get('accent', random.choice(accents))
-                )
-
-                self.conversations.extend(utterances)
-
-            except Exception as e:
-                print(f"Error parsing conversation {idx}: {e}")
-                continue
-
-        print(f"Loaded {len(self.conversations)} utterances")
-
-        if len(self.conversations) == 0:
-            self._generate_sample_data()
-
-    def _parse_transcript_text(self, text: str, conv_id: str, domain: str, topic: str, accent: str) -> List[Dict]:
-        """Parse transcript text into utterances"""
-        import random
-
-        utterances = []
-        lines = text.strip().split('\n')
-        current_time = 0.0
-
-        for idx, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-
-            speaker = "agent"
-            cleaned_text = line
-
-            if line.lower().startswith(('agent:', 'a:')):
-                speaker = "agent"
-                cleaned_text = line.split(':', 1)[1].strip() if ':' in line else line
-            elif line.lower().startswith(('customer:', 'c:', 'caller:', 'user:')):
-                speaker = "customer"
-                cleaned_text = line.split(':', 1)[1].strip() if ':' in line else line
-
-            word_count = len(cleaned_text.split())
-            duration = word_count * 0.5
-
-            utterances.append({
-                "conversation_id": conv_id,
-                "utterance_id": idx,
-                "speaker": speaker,
-                "text": cleaned_text,
-                "confidence": 0.95 + random.random() * 0.05,
-                "start_time": current_time,
-                "end_time": current_time + duration,
-                "domain": domain,
-                "topic": topic,
-                "accent": accent
-            })
-
-            current_time += duration + 0.5
-
-        return utterances
 
     def _generate_sample_data(self):
         """Generate sample conversations as fallback"""
@@ -726,17 +636,20 @@ async def stream_transcripts_high_throughput(
                 await asyncio.sleep(chunk_delay)
 
         # Only send completion message if not in infinite mode
+
         if not infinite_mode:
             elapsed = (datetime.now() - start_time).total_seconds()
             throughput = sent / elapsed if elapsed > 0 else 0
 
-            yield f"data: {json.dumps({
-                'status': 'complete',
-                'total': sent,
-                'elapsed_seconds': round(elapsed, 2),
-                'throughput': round(throughput, 2),
-                'throughput_description': f'{round(throughput, 0)} utterances/second'
-            })}\n\n"
+            payload = {
+                "status": "complete",
+                "total": sent,
+                "elapsed_seconds": round(elapsed, 2),
+                "throughput": round(throughput, 2),
+                "throughput_description": f"{round(throughput, 0)} utterances/second"
+            }
+
+            yield "data: " + json.dumps(payload) + "\n\n"
 
     return StreamingResponse(
         event_generator(),

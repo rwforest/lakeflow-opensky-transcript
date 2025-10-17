@@ -121,6 +121,15 @@ Genie also generates visualizations directly from your requests; for instance, a
 -   Build custom visualizations with **Databricks Apps** using any modern web framework.
 -   Create interactive real-time maps with frameworks like **Dash** and **OpenLayers**.
 
+### Streaming API
+
+This project also includes a FastAPI-based streaming API for real-time data consumption. You can use these endpoints to power live dashboards or connect to other applications.
+
+-   `/opensky/stream`: Streams live flight data from the OpenSky Network.
+-   `/transcript/stream`: Streams mock call center transcript utterances in real-time.
+-   `/transcript/stream/high-throughput`: A high-throughput stream for transcript data, ideal for performance testing.
+-   `/transcript/stream/continuous`: A continuously streaming endpoint that loops through the transcript dataset, providing an endless stream of data for demonstrations.
+
 ![Aviation Data Processing Stats](misc/stats.png)
 
 ---

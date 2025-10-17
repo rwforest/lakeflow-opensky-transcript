@@ -174,13 +174,7 @@ curl "http://localhost:8000/transcript/utterances?limit=5"
 ]
 ```
 
-#### `GET /transcript/conversation/{conversation_id}`
-Get all utterances for a specific conversation.
 
-**Example:**
-```bash
-curl "http://localhost:8000/transcript/conversation/conv_00001"
-```
 
 #### `GET /transcript/stream`
 Stream transcript utterances in real-time.
@@ -203,49 +197,31 @@ data: {"timestamp": "...", "utterance": {...}, "progress": "2/20"}
 data: {"status": "complete", "total": 20}
 ```
 
----
+#### `GET /transcript/stream/high-throughput`
+High-throughput transcript streaming for simulating 500k calls/day.
 
-### Analytics
-
-#### `GET /transcript/analytics/speaker-distribution`
-Get distribution of utterances by speaker (agent vs customer).
-
-**Example:**
-```bash
-curl "http://localhost:8000/transcript/analytics/speaker-distribution"
-```
-
-**Response:**
-```json
-{
-  "total_utterances": 200,
-  "agent_utterances": 102,
-  "customer_utterances": 98,
-  "agent_percentage": 51.0,
-  "customer_percentage": 49.0
-}
-```
-
-#### `GET /transcript/analytics/domain-distribution`
-Get distribution of conversations by domain.
+**Parameters:**
+- `chunk_size` (optional): Utterances per chunk (10-10000, default: 100)
+- `total_utterances` (optional): Total utterances to stream (0 = infinite)
+- `chunk_delay` (optional): Delay between chunks in seconds (0.0-1.0, default: 0.01)
 
 **Example:**
 ```bash
-curl "http://localhost:8000/transcript/analytics/domain-distribution"
+curl -N "http://localhost:8000/transcript/stream/high-throughput?chunk_size=1000&total_utterances=10000"
 ```
 
-**Response:**
-```json
-{
-  "total_utterances": 200,
-  "domains": {
-    "billing": 50,
-    "technical_support": 75,
-    "sales": 40,
-    "customer_service": 35
-  }
-}
+#### `GET /transcript/stream/continuous`
+TRULY CONTINUOUS transcript streaming - streams forever until client disconnects.
+
+**Parameters:**
+- `chunk_size` (optional): Utterances per chunk (10-10000, default: 100)
+- `chunk_delay` (optional): Delay between chunks in seconds (0.0-1.0, default: 0.01)
+
+**Example:**
+```bash
+curl -N "http://localhost:8000/transcript/stream/continuous"
 ```
+
 
 ---
 
