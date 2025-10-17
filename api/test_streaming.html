@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Transcript Streaming Test</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        h1 { color: #4ec9b0; }
+        .controls {
+            background: #252526;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            border-radius: 3px;
+            margin-right: 10px;
+        }
+        button:hover { background: #1177bb; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        #stats {
+            background: #252526;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .stat {
+            display: inline-block;
+            margin-right: 30px;
+        }
+        .stat-label { color: #858585; }
+        .stat-value {
+            color: #4ec9b0;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        #output {
+            background: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            padding: 10px;
+            height: 500px;
+            overflow-y: auto;
+            border-radius: 5px;
+        }
+        .chunk {
+            margin-bottom: 10px;
+            padding: 5px;
+            border-left: 3px solid #0e639c;
+            padding-left: 10px;
+        }
+        .timestamp {
+            color: #858585;
+            font-size: 11px;
+        }
+        .progress {
+            color: #4ec9b0;
+            font-weight: bold;
+        }
+        .complete {
+            color: #89d185;
+            font-weight: bold;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>📡 Transcript Streaming Test - 500k Calls/Day Simulation</h1>
+
+    <div class="controls">
+        <button id="startBtn" onclick="startStreaming()">Start Streaming</button>
+        <button id="stopBtn" onclick="stopStreaming()" disabled>Stop Streaming</button>
+        <button onclick="clearOutput()">Clear Output</button>
+    </div>
+
+    <div id="stats">
+        <div class="stat">
+            <div class="stat-label">Chunks Received</div>
+            <div class="stat-value" id="chunkCount">0</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Utterances</div>
+            <div class="stat-value" id="utteranceCount">0</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Throughput</div>
+            <div class="stat-value" id="throughput">0</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Status</div>
+            <div class="stat-value" id="status">Ready</div>
+        </div>
+    </div>
+
+    <div id="output"></div>
+
+    <script>
+        let eventSource = null;
+        let chunkCount = 0;
+        let utteranceCount = 0;
+        let startTime = null;
+
+        function startStreaming() {
+            // Configuration for CONTINUOUS streaming (infinite)
+            const chunkSize = 100;
+            const chunkDelay = 0.05;
+
+            const url = `http://localhost:8000/transcript/stream/continuous?chunk_size=${chunkSize}&chunk_delay=${chunkDelay}`;
+
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+            document.getElementById('status').textContent = 'Streaming...';
+
+            chunkCount = 0;
+            utteranceCount = 0;
+            startTime = Date.now();
+
+            eventSource = new EventSource(url);
+
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+
+                chunkCount++;
+                utteranceCount += data.chunk_size;
+
+                const now = new Date().toLocaleTimeString();
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+                const currentThroughput = data.stats ? data.stats.throughput : Math.round(utteranceCount / elapsed);
+
+                // Update stats
+                document.getElementById('chunkCount').textContent = chunkCount.toLocaleString();
+                document.getElementById('utteranceCount').textContent = utteranceCount.toLocaleString();
+                document.getElementById('throughput').textContent = currentThroughput.toLocaleString() + '/s';
+
+                // Add to output (only show every 10th chunk to avoid overwhelming the display)
+                if (chunkCount % 10 === 0 || chunkCount <= 5) {
+                    document.getElementById('output').innerHTML +=
+                        `<div class="chunk">
+                            <span class="timestamp">[${now}]</span>
+                            Chunk #${chunkCount.toLocaleString()}: ${data.chunk_size} utterances |
+                            <span class="progress">Total: ${utteranceCount.toLocaleString()} | Throughput: ${currentThroughput}/s</span>
+                        </div>`;
+
+                    // Auto-scroll
+                    const output = document.getElementById('output');
+                    output.scrollTop = output.scrollHeight;
+                }
+            };
+
+            eventSource.onerror = function(error) {
+                console.error('EventSource error:', error);
+                document.getElementById('status').textContent = 'Error';
+                stopStreaming();
+            };
+        }
+
+        function stopStreaming() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('status').textContent = 'Stopped';
+        }
+
+        function clearOutput() {
+            document.getElementById('output').innerHTML = '';
+            chunkCount = 0;
+            utteranceCount = 0;
+            document.getElementById('chunkCount').textContent = '0';
+            document.getElementById('utteranceCount').textContent = '0';
+            document.getElementById('throughput').textContent = '0';
+        }
+    </script>
+</body>
+</html>

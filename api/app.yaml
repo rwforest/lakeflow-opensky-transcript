@@ -1,0 +1,10 @@
+command: ['uvicorn', 'main:app', '--host', '0.0.0.0', '--port', '8000']
+env:
+  - name: 'PYTHONUNBUFFERED'
+    value: '1'
+  # Optional: Add OpenSky Network credentials for authenticated access (4000 calls/day)
+  # Uncomment and set these in Databricks App configuration for higher rate limits
+  # - name: 'OPENSKY_CLIENT_ID'
+  #   value: 'your_client_id'
+  # - name: 'OPENSKY_CLIENT_SECRET'
+  #   value: 'your_client_secret'

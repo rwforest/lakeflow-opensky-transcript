@@ -1,16 +1,12 @@
-# FastAPI and server
+# FastAPI and server - Databricks Apps compatible
 fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
+uvicorn>=0.30.0
 pydantic>=2.9.0
 python-multipart>=0.0.12
 
-# Optional: HuggingFace datasets (for real data)
-# Uncomment if you want to test with actual HuggingFace data
-# datasets==2.16.1
-
-# Optional: PySpark (for full integration testing)
-# Uncomment if you want to test actual Spark data sources
-# pyspark==3.5.0
+# Data source dependencies
+requests>=2.31.0
+datasets>=2.16.1
 
 # Development dependencies (optional)
 # pytest==7.4.3
