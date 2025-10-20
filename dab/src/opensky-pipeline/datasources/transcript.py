@@ -1,27 +1,30 @@
 """
-HuggingFace Transcript Data Source for Apache Spark - Real-Time Streaming Simulation
+API-based Transcript Data Source for Apache Spark - Continuous Streaming
 
-This module provides a custom Spark data source that simulates real-time streaming of
-call center transcripts from HuggingFace datasets. It loads the AIxBlock 92k call center
-dataset and streams utterances one by one to simulate a continuous conversation stream.
+This module provides a custom Spark data source that streams call center transcripts
+from a FastAPI backend. It continuously polls the /transcript/utterances endpoint
+which loops through the dataset infinitely, simulating real-time call center data.
 
 Features:
-- Loads transcripts from HuggingFace datasets (AIxBlock/92k-real-world-call-center-scripts-english)
-- Splits conversations into utterances for realistic streaming
-- Simulates real-time streaming with configurable delays
-- Supports continuous looping for long-running pipelines
-- Word-level timestamps and speaker identification
+- Consumes continuous transcript data from FastAPI backend
+- Automatic looping through dataset for infinite streaming
+- High throughput capable of handling 500k+ calls/day
+- Configurable batch sizes for throughput tuning
+- Simple HTTP polling compatible with Spark serialization
 - PII-redacted transcripts for privacy compliance
 
+Architecture:
+    FastAPI Endpoint (loops infinitely) → Spark Polling → Spark Micro-batches
+
 Usage Example:
-    # Basic usage - streams call center transcripts
+    # Basic usage - streams call center transcripts continuously
     df = spark.readStream.format("transcript").load()
 
-    # With specific dataset and options
+    # With API configuration for high throughput
     df = spark.readStream.format("transcript") \\
-        .option("dataset", "AIxBlock/92k-real-world-call-center-scripts-english") \\
-        .option("utterance_delay", "0.5") \\
-        .option("loop", "true") \\
+        .option("api_base_url", "http://localhost:8000") \\
+        .option("batch_size", "100") \\
+        .option("request_delay", "0.01") \\
         .load()
 
 Schema:
@@ -32,12 +35,15 @@ Schema:
     - speaker: Speaker role (agent/customer)
     - text: The actual utterance text
     - confidence: ASR confidence score
+    - start_time: Start time within conversation
+    - end_time: End time within conversation
     - domain: Call domain/category
     - topic: Inbound/outbound classification
+    - accent: Speaker accent
 
 Author: Databricks Tech Marketing - Example Only
 Purpose: Educational Example / Pipeline Simulation
-Version: 1.0
+Version: 3.0 - Continuous Streaming
 Last Updated: October 2025
 
 ================================================================================
@@ -45,8 +51,7 @@ LEGAL NOTICES & TERMS OF USE
 
 USAGE RESTRICTIONS:
 - Educational and demonstration purposes only
-- Must comply with HuggingFace dataset terms of use
-- Dataset provided by AIxBlock under their license terms
+- Must comply with data source API terms of use
 
 DISCLAIMER:
 This code is provided "AS IS" for educational purposes only. No warranties,
@@ -56,11 +61,9 @@ applicable terms of service and regulations.
 """
 
 import time
-import random
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Tuple, Any, Optional, Iterator
-from dataclasses import dataclass
-from enum import Enum
+import requests
+from datetime import datetime, timezone
+from typing import Dict, List, Tuple, Iterator
 
 from pyspark.sql.datasource import SimpleDataSourceStreamReader, DataSource
 from pyspark.sql.types import *
@@ -68,356 +71,136 @@ from pyspark.sql.types import *
 DS_NAME = "transcript"
 
 
-@dataclass
-class Utterance:
-    """Represents a single utterance in a conversation"""
-    text: str
-    speaker: str
-    start_time: float
-    end_time: float
-    confidence: float
-    words: List[Dict[str, Any]]
-
-
-@dataclass
-class Conversation:
-    """Represents a complete conversation with metadata"""
-    conversation_id: str
-    utterances: List[Utterance]
-    domain: str
-    topic: str
-    accent: str
-    duration: float
-
-
 class TranscriptStreamReader(SimpleDataSourceStreamReader):
     """
-    Stream reader that simulates real-time transcript streaming by:
-    1. Loading conversations from HuggingFace
-    2. Splitting them into individual utterances
-    3. Streaming utterances one by one with realistic timing
-    4. Looping continuously to simulate ongoing conversations
+    Stream reader that continuously polls the FastAPI /transcript/utterances endpoint.
+    The API automatically loops through the dataset infinitely, providing continuous data.
     """
 
-    DEFAULT_DATASET = "AIxBlock/92k-real-world-call-center-scripts-english"
-    DEFAULT_UTTERANCE_DELAY = 0.1  # seconds between utterances
-    DEFAULT_CONVERSATION_DELAY = 1.0  # seconds between conversations
-    CHUNK_SIZE = 10  # utterances per batch
+    DEFAULT_API_URL = "http://localhost:8000"
+    DEFAULT_BATCH_SIZE = 100
+    DEFAULT_REQUEST_DELAY = 0.05
+    MAX_RETRIES = 3
 
     def __init__(self, schema: StructType, options: Dict[str, str]):
         super().__init__()
         self.schema = schema
         self.options = options
 
-        self.dataset_name = options.get('dataset', self.DEFAULT_DATASET)
-        self.utterance_delay = float(options.get('utterance_delay', self.DEFAULT_UTTERANCE_DELAY))
-        self.conversation_delay = float(options.get('conversation_delay', self.DEFAULT_CONVERSATION_DELAY))
-        self.loop = options.get('loop', 'true').lower() == 'true'
-        self.max_utterances = int(options.get('max_utterances', '-1'))
+        # API configuration
+        self.api_base_url = options.get('api_base_url', self.DEFAULT_API_URL).rstrip('/')
+        self.batch_size = int(options.get('batch_size', self.DEFAULT_BATCH_SIZE))
+        self.request_delay = float(options.get('request_delay', self.DEFAULT_REQUEST_DELAY))
 
         # State tracking
-        self.conversations = []
-        self.current_conversation_idx = 0
-        self.current_utterance_idx = 0
         self.total_utterances_sent = 0
         self.start_time = datetime.now(timezone.utc)
 
-        # Load dataset
-        self._load_dataset()
+        # Test API connectivity
+        self._test_api_connection()
 
-    def _load_dataset(self):
-        """
-        Load the HuggingFace dataset and parse conversations.
-        In a real implementation, this would use the datasets library.
-        For simulation, we'll generate realistic sample data.
-        """
+    def _test_api_connection(self):
+        """Test connectivity to the API"""
+        session = requests.Session()
         try:
-            # Try to load from HuggingFace
-            try:
-                from datasets import load_dataset
-                print(f"Loading dataset: {self.dataset_name}")
-                dataset = load_dataset(self.dataset_name, split='train', streaming=True)
-                self._parse_huggingface_dataset(dataset)
-            except ImportError:
-                print("HuggingFace datasets library not available, using simulated data")
-                self._generate_sample_data()
-            except Exception as e:
-                print(f"Error loading dataset: {e}, using simulated data")
-                self._generate_sample_data()
-
+            url = f"{self.api_base_url}/transcript/status"
+            response = session.get(url, timeout=5)
+            response.raise_for_status()
+            status = response.json()
+            print(f"Connected to transcript API: {status.get('message', 'OK')}")
+            print(f"Records available: {status.get('records_available', 'unknown')}")
         except Exception as e:
-            print(f"Failed to initialize dataset: {e}")
-            self._generate_sample_data()
+            print(f"Warning: Could not connect to API at {self.api_base_url}: {e}")
+            print("Will attempt to fetch data anyway...")
+        finally:
+            session.close()
 
-    def _parse_huggingface_dataset(self, dataset):
-        """Parse HuggingFace dataset into Conversation objects"""
-        print("Parsing HuggingFace dataset...")
+    def _fetch_utterances(self, limit: int) -> List[Dict]:
+        """Fetch utterances from the API - the API loops through data automatically"""
+        url = f"{self.api_base_url}/transcript/utterances"
+        params = {'limit': limit}
 
-        # Take first 100 conversations for streaming
-        for idx, record in enumerate(dataset):
-            if idx >= 100:  # Limit initial load
-                break
-
+        for attempt in range(self.MAX_RETRIES):
             try:
-                # Parse the record structure (adjust based on actual dataset schema)
-                conversation_id = record.get('id', f"conv_{idx}")
+                response = requests.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                utterances = response.json()
+                return utterances
+            except requests.exceptions.RequestException as e:
+                if attempt < self.MAX_RETRIES - 1:
+                    print(f"API request failed (attempt {attempt + 1}/{self.MAX_RETRIES}): {e}")
+                    time.sleep(1)
+                else:
+                    print(f"Failed to fetch utterances after {self.MAX_RETRIES} attempts: {e}")
+                    return []
 
-                # Parse transcript - could be in different formats
-                transcript_text = record.get('transcript', record.get('text', ''))
-
-                # Split into utterances (simple split by newlines or speaker markers)
-                utterances = self._parse_transcript_text(transcript_text, conversation_id)
-
-                conversation = Conversation(
-                    conversation_id=conversation_id,
-                    utterances=utterances,
-                    domain=record.get('domain', 'unknown'),
-                    topic=record.get('topic', 'unknown'),
-                    accent=record.get('accent', 'unknown'),
-                    duration=record.get('duration', len(utterances) * 5.0)
-                )
-
-                self.conversations.append(conversation)
-
-            except Exception as e:
-                print(f"Error parsing conversation {idx}: {e}")
-                continue
-
-        print(f"Loaded {len(self.conversations)} conversations")
-
-        if len(self.conversations) == 0:
-            print("No conversations loaded, falling back to sample data")
-            self._generate_sample_data()
-
-    def _parse_transcript_text(self, text: str, conv_id: str) -> List[Utterance]:
-        """Parse transcript text into utterances"""
-        utterances = []
-
-        # Try to split by common patterns
-        lines = text.strip().split('\n')
-        current_time = 0.0
-
-        for idx, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-
-            # Detect speaker (common patterns: "Agent:", "Customer:", "A:", "C:")
-            speaker = "agent"
-            cleaned_text = line
-
-            if line.lower().startswith(('agent:', 'a:')):
-                speaker = "agent"
-                cleaned_text = line.split(':', 1)[1].strip() if ':' in line else line
-            elif line.lower().startswith(('customer:', 'c:', 'caller:', 'user:')):
-                speaker = "customer"
-                cleaned_text = line.split(':', 1)[1].strip() if ':' in line else line
-
-            # Estimate timing
-            word_count = len(cleaned_text.split())
-            duration = word_count * 0.5  # ~0.5 seconds per word
-
-            utterance = Utterance(
-                text=cleaned_text,
-                speaker=speaker,
-                start_time=current_time,
-                end_time=current_time + duration,
-                confidence=0.95 + random.random() * 0.05,  # 95-100% confidence
-                words=[]  # Could parse word-level timestamps if available
-            )
-
-            utterances.append(utterance)
-            current_time += duration + 0.5  # Add pause between utterances
-
-        return utterances
-
-    def _generate_sample_data(self):
-        """Generate realistic sample call center conversations for simulation"""
-        print("Generating sample call center conversations...")
-
-        domains = ['billing', 'technical_support', 'sales', 'customer_service', 'account']
-        topics = ['inbound', 'outbound']
-        accents = ['indian', 'american', 'filipino']
-
-        # Sample conversation templates
-        conversation_templates = [
-            [
-                ("agent", "Thank you for calling customer support. How may I help you today?"),
-                ("customer", "Hi, I'm having trouble with my recent bill. It seems higher than usual."),
-                ("agent", "I understand your concern. Let me pull up your account. Can I have your account number please?"),
-                ("customer", "Sure, it's account number 12345."),
-                ("agent", "Thank you. I can see your account now. Let me review your recent charges."),
-                ("agent", "I see the issue. There was a one-time setup fee that was applied this month."),
-                ("customer", "Oh, I wasn't aware of that fee. Can you explain what it's for?"),
-                ("agent", "Of course. This fee covers the installation of your new service upgrade."),
-                ("customer", "I see. That makes sense now. Thank you for clarifying."),
-                ("agent", "You're welcome. Is there anything else I can help you with today?"),
-                ("customer", "No, that's all. Thank you for your help."),
-                ("agent", "Thank you for calling. Have a great day!"),
-            ],
-            [
-                ("agent", "Hello, this is tech support. What seems to be the problem?"),
-                ("customer", "My internet connection keeps dropping every few minutes."),
-                ("agent", "I'm sorry to hear that. Let's troubleshoot this together."),
-                ("agent", "Can you tell me what lights are showing on your modem?"),
-                ("customer", "The power light is solid green, but the internet light is blinking red."),
-                ("agent", "That indicates a connection issue. Let's try resetting your modem."),
-                ("customer", "Okay, I've unplugged it. How long should I wait?"),
-                ("agent", "Wait about 30 seconds, then plug it back in."),
-                ("customer", "Alright, it's plugged back in now. The lights are coming back on."),
-                ("agent", "Great. Let's wait for all the lights to stabilize."),
-                ("customer", "Okay, the internet light is now solid green."),
-                ("agent", "Perfect! Try accessing a website now."),
-                ("customer", "Yes, it's working! Thank you so much!"),
-                ("agent", "You're welcome. Call us if you have any more issues."),
-            ],
-            [
-                ("agent", "Good afternoon, I'm calling about our special promotion."),
-                ("customer", "What kind of promotion is it?"),
-                ("agent", "We're offering 20% off on our premium plan for the next three months."),
-                ("customer", "That sounds interesting. What does the premium plan include?"),
-                ("agent", "It includes unlimited data, priority support, and access to exclusive features."),
-                ("customer", "How much would it cost after the promotional period?"),
-                ("agent", "After three months, it would be $49.99 per month."),
-                ("customer", "That's a bit more than I'm paying now. Let me think about it."),
-                ("agent", "I understand. Would you like me to email you the details?"),
-                ("customer", "Yes, that would be helpful."),
-                ("agent", "Great. I'll send that over shortly. Thank you for your time."),
-            ],
-        ]
-
-        # Generate 50 sample conversations
-        for i in range(50):
-            template = random.choice(conversation_templates)
-            conversation_id = f"conv_{i:05d}"
-
-            utterances = []
-            current_time = 0.0
-
-            for speaker, text in template:
-                word_count = len(text.split())
-                duration = word_count * 0.5
-
-                utterance = Utterance(
-                    text=text,
-                    speaker=speaker,
-                    start_time=current_time,
-                    end_time=current_time + duration,
-                    confidence=0.94 + random.random() * 0.06,
-                    words=[]
-                )
-
-                utterances.append(utterance)
-                current_time += duration + random.uniform(0.3, 1.0)
-
-            conversation = Conversation(
-                conversation_id=conversation_id,
-                utterances=utterances,
-                domain=random.choice(domains),
-                topic=random.choice(topics),
-                accent=random.choice(accents),
-                duration=current_time
-            )
-
-            self.conversations.append(conversation)
-
-        print(f"Generated {len(self.conversations)} sample conversations")
+        return []
 
     def initialOffset(self) -> Dict[str, int]:
         """Initialize offset for streaming"""
         return {
-            'conversation_idx': 0,
-            'utterance_idx': 0,
             'total_sent': 0
         }
 
     def read(self, start: Dict[str, int]) -> Tuple[List[Tuple], Dict[str, int]]:
         """
-        Read next batch of utterances.
-        This simulates streaming by returning utterances one chunk at a time.
+        Read next batch of utterances from the API.
+        The API automatically loops through the dataset for continuous streaming.
         """
-        if not self.conversations:
-            print("No conversations available")
-            return ([], start)
-
         # Restore state from offset
-        self.current_conversation_idx = start.get('conversation_idx', 0)
-        self.current_utterance_idx = start.get('utterance_idx', 0)
         self.total_utterances_sent = start.get('total_sent', 0)
 
-        # Check if we've reached max utterances
-        if self.max_utterances > 0 and self.total_utterances_sent >= self.max_utterances:
-            if not self.loop:
-                print(f"Reached max utterances: {self.max_utterances}")
-                return ([], start)
+        # Add delay between requests if configured
+        if self.request_delay > 0:
+            time.sleep(self.request_delay)
 
+        # Fetch utterances from API
+        utterances = self._fetch_utterances(self.batch_size)
+
+        if not utterances:
+            # Return empty batch but keep offset
+            return ([], start)
+
+        # Convert API response to Spark records
         batch = []
-        utterances_collected = 0
-
-        while utterances_collected < self.CHUNK_SIZE:
-            # Check if we've exhausted all conversations
-            if self.current_conversation_idx >= len(self.conversations):
-                if self.loop:
-                    print("Looping back to start of conversations...")
-                    self.current_conversation_idx = 0
-                    self.current_utterance_idx = 0
-                    time.sleep(self.conversation_delay)
+        for utt in utterances:
+            # Parse timestamp from API response
+            timestamp_str = utt.get('timestamp')
+            if timestamp_str:
+                # Handle ISO format timestamp
+                if isinstance(timestamp_str, str):
+                    timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
                 else:
-                    print("Reached end of conversations")
-                    break
-
-            conversation = self.conversations[self.current_conversation_idx]
-
-            # Check if we've exhausted current conversation
-            if self.current_utterance_idx >= len(conversation.utterances):
-                self.current_conversation_idx += 1
-                self.current_utterance_idx = 0
-                time.sleep(self.conversation_delay)
-                continue
-
-            # Get next utterance
-            utterance = conversation.utterances[self.current_utterance_idx]
-
-            # Create timestamp for this utterance (relative to stream start)
-            elapsed = (self.total_utterances_sent + utterances_collected) * self.utterance_delay
-            timestamp = self.start_time + timedelta(seconds=elapsed)
+                    timestamp = datetime.now(timezone.utc)
+            else:
+                timestamp = datetime.now(timezone.utc)
 
             # Create tuple matching schema
             record = (
                 timestamp,
-                conversation.conversation_id,
-                self.current_utterance_idx,
-                utterance.speaker,
-                utterance.text,
-                utterance.confidence,
-                utterance.start_time,
-                utterance.end_time,
-                conversation.domain,
-                conversation.topic,
-                conversation.accent
+                utt.get('conversation_id', 'unknown'),
+                utt.get('utterance_id', 0),
+                utt.get('speaker', 'unknown'),
+                utt.get('text', ''),
+                utt.get('confidence', 1.0),
+                utt.get('start_time', 0.0),
+                utt.get('end_time', 0.0),
+                utt.get('domain'),
+                utt.get('topic'),
+                utt.get('accent')
             )
 
             batch.append(record)
 
-            # Move to next utterance
-            self.current_utterance_idx += 1
-            utterances_collected += 1
-
-            # Add realistic delay between utterances
-            if self.utterance_delay > 0:
-                time.sleep(self.utterance_delay)
-
         # Update offset
         new_offset = {
-            'conversation_idx': self.current_conversation_idx,
-            'utterance_idx': self.current_utterance_idx,
-            'total_sent': self.total_utterances_sent + utterances_collected
+            'total_sent': self.total_utterances_sent + len(batch)
         }
 
-        self.total_utterances_sent += utterances_collected
+        self.total_utterances_sent += len(batch)
 
         if batch:
-            print(f"Streaming batch: {len(batch)} utterances (total: {self.total_utterances_sent})")
+            print(f"Fetched batch: {len(batch)} utterances (total: {self.total_utterances_sent})")
 
         return (batch, new_offset)
 
@@ -429,14 +212,27 @@ class TranscriptStreamReader(SimpleDataSourceStreamReader):
 
 class TranscriptDataSource(DataSource):
     """
-    Custom Spark Data Source for streaming call center transcripts.
+    Custom Spark Data Source for continuous streaming of call center transcripts.
+
+    This data source polls the FastAPI /transcript/utterances endpoint which
+    automatically loops through the dataset infinitely, providing continuous data.
+    Perfect for simulating real-time call center data at scale (500k+ calls/day).
 
     Options:
-        - dataset: HuggingFace dataset name (default: AIxBlock/92k-real-world-call-center-scripts-english)
-        - utterance_delay: Delay in seconds between utterances (default: 0.1)
-        - conversation_delay: Delay in seconds between conversations (default: 1.0)
-        - loop: Whether to loop continuously (default: true)
-        - max_utterances: Maximum utterances to stream, -1 for unlimited (default: -1)
+        - api_base_url: Base URL of the transcript API (default: http://localhost:8000)
+        - batch_size: Number of utterances to fetch per request (default: 100)
+        - request_delay: Delay between API requests in seconds (default: 0.05)
+
+    Example:
+        # Basic streaming
+        df = spark.readStream.format("transcript").load()
+
+        # High throughput configuration
+        df = spark.readStream.format("transcript") \\
+            .option("api_base_url", "http://localhost:8000") \\
+            .option("batch_size", "200") \\
+            .option("request_delay", "0.01") \\
+            .load()
     """
 
     def __init__(self, options: Dict[str, str] = None):
