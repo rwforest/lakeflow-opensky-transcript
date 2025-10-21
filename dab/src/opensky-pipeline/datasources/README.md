@@ -32,23 +32,32 @@ df = spark.readStream.format("opensky") \
 
 ### 2. Transcript Data Source (`transcript.py`)
 
-Streams call center transcripts from HuggingFace datasets, simulating real-time conversation streaming.
+Streams call center transcripts from a local FastAPI backend, simulating real-time conversation streaming.
+
+**Prerequisites:**
+Start the local API server first:
+```bash
+cd api
+python main.py
+```
 
 **Usage:**
 ```python
+# Basic usage - connects to http://localhost:8000 by default
+df = spark.readStream.format("transcript").load()
+
+# With custom API configuration
 df = spark.readStream.format("transcript") \
-    .option("dataset", "AIxBlock/92k-real-world-call-center-scripts-english") \
-    .option("utterance_delay", "0.1") \
-    .option("loop", "true") \
+    .option("api_base_url", "http://localhost:8000") \
+    .option("batch_size", "100") \
+    .option("request_delay", "0.05") \
     .load()
 ```
 
 **Options:**
-- `dataset`: HuggingFace dataset name (default: AIxBlock/92k-real-world-call-center-scripts-english)
-- `utterance_delay`: Delay in seconds between utterances (default: 0.1)
-- `conversation_delay`: Delay in seconds between conversations (default: 1.0)
-- `loop`: Whether to loop continuously through conversations (default: true)
-- `max_utterances`: Maximum utterances to stream, -1 for unlimited (default: -1)
+- `api_base_url`: Base URL of the transcript API (default: http://localhost:8000)
+- `batch_size`: Number of utterances to fetch per request (default: 100)
+- `request_delay`: Delay between API requests in seconds (default: 0.05)
 
 **Schema:**
 ```
@@ -66,40 +75,52 @@ accent: StringType              # Speaker accent
 ```
 
 **Features:**
-- Simulates real-time streaming by chunking conversations into utterances
-- Supports HuggingFace datasets (tries to load, falls back to sample data)
-- Continuous looping for long-running pipelines
-- Configurable streaming rate
+- Polls local API for continuous transcript streaming
+- Automatic looping through dataset for infinite streaming
+- High throughput capable of handling 500k+ calls/day
+- Configurable batch sizes for throughput tuning
 - Word-level timing information
 - PII-redacted transcripts
 
 **How It Works:**
 
-1. **Load Conversations**: Loads call center conversations from HuggingFace or generates sample data
-2. **Parse Utterances**: Splits conversations into individual utterances (speaker turns)
-3. **Stream Chunks**: Returns utterances in batches (default 10 per batch)
-4. **Simulate Timing**: Adds realistic delays between utterances
-5. **Loop Continuously**: When enabled, restarts from the beginning after all conversations
+1. **Local API**: FastAPI server reads from `data/conversations.jsonl` (or generates sample data)
+2. **Continuous Polling**: Spark data source polls `/transcript/utterances` endpoint
+3. **Automatic Looping**: API automatically loops through the dataset infinitely
+4. **Batch Processing**: Returns utterances in configurable batch sizes (default 100)
+5. **Rate Control**: Configurable delay between API requests for throughput tuning
 
-This approach reverses the typical streaming pipeline:
+Architecture:
+```
+FastAPI (data/conversations.jsonl) → HTTP API → Spark Streaming → Delta Tables
+```
+
+This approach simulates real-time call center data:
 - **Normal**: Real-time audio → ASR → streaming utterances → storage
-- **Simulated**: Static transcripts → chunking → streaming utterances → pipeline
+- **Simulated**: Local dataset → API → streaming utterances → pipeline
 
-Perfect for testing and demonstrating streaming pipelines without live data!
+Perfect for testing and demonstrating streaming pipelines with realistic data locally!
 
 ---
 
 ## Installation
 
-### HuggingFace Datasets (Optional)
+### Running the Local API
 
-To load actual HuggingFace datasets, install the datasets library:
+The transcript data source requires the local FastAPI server to be running:
 
 ```bash
-pip install datasets
+# Navigate to the API directory
+cd api
+
+# Install dependencies (if needed)
+pip install -r requirements.txt
+
+# Start the API server
+python main.py
 ```
 
-If not installed, the transcript data source will fall back to realistic sample data.
+The API will start on `http://localhost:8000` and serve transcript data from `data/conversations.jsonl`. If the data file is not present, it will generate sample data automatically.
 
 ---
 
@@ -134,9 +155,9 @@ flights = spark.readStream.format("opensky") \
     .option("region", "NORTH_AMERICA") \
     .load()
 
-# Stream transcripts
+# Stream transcripts (requires API running at localhost:8000)
 transcripts = spark.readStream.format("transcript") \
-    .option("utterance_delay", "0.5") \
+    .option("batch_size", "100") \
     .load()
 
 # Process both streams
@@ -149,6 +170,8 @@ transcripts.writeStream.format("delta").table("transcripts")
 ## Notes
 
 - Both data sources follow Spark's Python Data Source API (PySpark 3.4+)
-- Transcript data source is designed for simulation/testing purposes
+- Transcript data source connects to local FastAPI backend for data consumption
 - OpenSky data source requires network access and respects API rate limits
 - Both support continuous streaming for long-running pipelines
+- The transcript API automatically loops through data for infinite streaming
+- Data is served from `api/data/conversations.jsonl` or sample data if not present
